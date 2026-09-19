@@ -1,8 +1,13 @@
 import { Context, CacheMetadata, createCacheEntry } from './common';
 import { getCacheEntry, CACHE_EMPTY } from './getCachedValue';
-import { isExpired } from './isExpired';
 import { Reporter } from './reporter';
 import { checkValue } from './checkValue';
+import {
+  planCacheFallback,
+  planCacheFallbackRead,
+  planValidatedValue,
+  planWriteFreshValue,
+} from './decisions';
 
 export async function getFreshValue<Value>(
   context: Context<Value>,
@@ -25,12 +30,14 @@ export async function getFreshValue<Value>(
 
     // in case a fresh value was forced (and errored) we might be able to
     // still get one from cache
-    if (forceFresh && fallbackToCache > 0) {
+    if (planCacheFallbackRead({ forceFresh, fallbackToCache })) {
       const entry = await getCacheEntry(context, report);
-      if (
-        entry === CACHE_EMPTY ||
-        entry.metadata.createdTime + fallbackToCache < Date.now()
-      ) {
+      const fallbackPlan = planCacheFallback(
+        entry === CACHE_EMPTY ? null : entry,
+        fallbackToCache,
+        Date.now,
+      );
+      if (fallbackPlan === 'throw' || entry === CACHE_EMPTY) {
         throw error;
       }
       value = entry.value;
@@ -42,37 +49,38 @@ export async function getFreshValue<Value>(
     }
   }
 
-  const valueCheck = await checkValue(context, value);
-  if (!valueCheck.success) {
-    report({ name: 'checkFreshValueErrorObj', reason: valueCheck.reason });
+  const checkPlan = planValidatedValue(await checkValue(context, value));
+  if (checkPlan.action === 'reject') {
+    report({ name: 'checkFreshValueErrorObj', reason: checkPlan.reason });
     report({
       name: 'checkFreshValueError',
       reason:
-        valueCheck.reason instanceof Error
-          ? valueCheck.reason.message
-          : String(valueCheck.reason),
+        checkPlan.reason instanceof Error
+          ? checkPlan.reason.message
+          : String(checkPlan.reason),
     });
 
     throw new Error(`check failed for fresh value of ${key}`, {
-      cause: valueCheck.reason,
+      cause: checkPlan.reason,
     });
   }
 
   try {
-    /* Only write to cache when the value has not already fully expired while getting it */
-    const write = isExpired(metadata) !== true;
+    /* The clock is handed to the decision layer as input and read at most
+       once, after the loader finished */
+    const { write } = planWriteFreshValue(metadata, Date.now);
     if (write) {
       await cache.set(key, createCacheEntry(value, metadata));
     }
     report({
       name: 'writeFreshValueSuccess',
       metadata,
-      migrated: valueCheck.migrated,
+      migrated: checkPlan.migrated,
       written: write,
     });
   } catch (error: unknown) {
     report({ name: 'writeFreshValueError', error });
   }
 
-  return valueCheck.value;
+  return checkPlan.value;
 }

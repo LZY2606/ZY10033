@@ -8,7 +8,7 @@ import {
 import { CACHE_EMPTY, getCachedValue } from './getCachedValue';
 import { getFreshValue } from './getFreshValue';
 import { CreateReporter } from './reporter';
-import { isExpired } from './isExpired';
+import { planPendingValue } from './decisions';
 
 // This is to prevent requesting multiple fresh values in parallel
 // while revalidating or getting first value
@@ -41,11 +41,17 @@ export async function cachified<Value>(
   const { key, cache, forceFresh, report, metadata } = context;
   const pendingValues = getPendingValuesCache(cache);
 
+  /* The clock is read exactly once for the start of this call (when the
+     context metadata was created) and passed as input to every freshness
+     decision, so a single call can not reach two different conclusions
+     when it crosses a time boundary */
+  const now = metadata.createdTime;
+
   const hasPendingValue = () => {
     return pendingValues.has(key);
   };
   const cachedValue = !forceFresh
-    ? await getCachedValue(context, report, hasPendingValue)
+    ? await getCachedValue(context, report, hasPendingValue, now)
     : CACHE_EMPTY;
   if (cachedValue !== CACHE_EMPTY) {
     report({ name: 'done', value: cachedValue });
@@ -55,7 +61,7 @@ export async function cachified<Value>(
   if (pendingValues.has(key)) {
     const { value: pendingRefreshValue, metadata } = pendingValues.get(key)!;
 
-    if (!isExpired(metadata)) {
+    if (planPendingValue(metadata, now) === 'join') {
       /* Notify batch that we handled this call using pending value */
       context.getFreshValue[HANDLE]?.();
       report({ name: 'getFreshValueHookPending' });

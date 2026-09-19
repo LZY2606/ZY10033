@@ -1,0 +1,31 @@
+{
+  "description": "Pre-refactor freshness-condition counts (see scripts/count-freshness-conditions.mjs)",
+  "generatedFrom": "git ref HEAD",
+  "patterns": [
+    "isExpired() decision call",
+    "freshness literal comparison",
+    "freshness literal comparison (reversed)",
+    "expired flag test",
+    "negated expired flag test",
+    "clock boundary comparison",
+    "ttl null check",
+    "inline age comparison"
+  ],
+  "total": 16,
+  "files": {
+    "src/StandardSchemaV1.ts": 0,
+    "src/assertCacheEntry.ts": 0,
+    "src/cachified.ts": 1,
+    "src/checkValue.ts": 0,
+    "src/common.ts": 1,
+    "src/configure.ts": 0,
+    "src/createBatch.ts": 0,
+    "src/getCachedValue.ts": 5,
+    "src/getFreshValue.ts": 2,
+    "src/index.ts": 0,
+    "src/isExpired.ts": 5,
+    "src/reporter.ts": 1,
+    "src/softPurge.ts": 1,
+    "src/testHelpers.ts": 0
+  }
+}
