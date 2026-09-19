@@ -1,10 +1,10 @@
 import { Context, CacheEntry, CachifiedOptions } from './common';
 import { assertCacheEntry } from './assertCacheEntry';
 import { HANDLE } from './common';
-import { isExpired } from './isExpired';
 import { cachified } from './cachified';
 import { Reporter } from './reporter';
 import { checkValue } from './checkValue';
+import { planCacheRead, planCheckedCacheValue } from './decisions';
 
 export const CACHE_EMPTY = Symbol();
 export async function getCacheEntry<Value>(
@@ -36,23 +36,26 @@ export async function getCachedValue<Value>(
   } = context;
 
   try {
-    const cached = await getCacheEntry(context, report);
+    const readResult = await getCacheEntry(context, report);
 
-    if (cached === CACHE_EMPTY) {
+    const plan = planCacheRead({
+      entry: readResult === CACHE_EMPTY ? null : readResult,
+      now: context.now,
+      staleWhileRevalidate,
+    });
+
+    if (plan.action === 'miss') {
       report({ name: 'getCachedValueEmpty' });
       return CACHE_EMPTY;
     }
 
-    const expired = isExpired(cached.metadata);
-    const staleRefresh =
-      expired === 'stale' ||
-      (expired === true && staleWhileRevalidate === Infinity);
+    const cached = plan.entry;
 
-    if (expired === true) {
+    if (plan.outdated) {
       report({ name: 'getCachedValueOutdated', ...cached });
     }
 
-    if (staleRefresh) {
+    if (plan.action === 'use' && plan.backgroundRefresh) {
       const staleRefreshOptions: CachifiedOptions<Value> = {
         ...context,
         async getFreshValue({ metadata }) {
@@ -89,20 +92,25 @@ export async function getCachedValue<Value>(
       );
     }
 
-    if (!expired || staleRefresh) {
+    if (plan.action === 'use') {
+      const { backgroundRefresh } = plan;
       const valueCheck = await checkValue(context, cached.value);
-      if (valueCheck.success) {
+      const checkedPlan = planCheckedCacheValue({
+        check: valueCheck,
+        backgroundRefresh,
+      });
+      if (checkedPlan.action === 'return') {
         report({
           name: 'getCachedValueSuccess',
-          value: valueCheck.value,
-          migrated: valueCheck.migrated,
+          value: checkedPlan.value,
+          migrated: checkedPlan.migrated,
         });
-        if (!staleRefresh) {
+        if (checkedPlan.notifyHandled) {
           // Notify batch that we handled this call using cached value
           getFreshValue[HANDLE]?.();
         }
 
-        if (valueCheck.migrated) {
+        if (checkedPlan.migrated) {
           context.waitUntil(
             Promise.resolve().then(async () => {
               try {
@@ -119,7 +127,7 @@ export async function getCachedValue<Value>(
                   // update with migrated value
                   await context.cache.set(context.key, {
                     ...cached,
-                    value: valueCheck.value,
+                    value: checkedPlan.value,
                   });
                 }
               } catch (err) {
@@ -129,15 +137,15 @@ export async function getCachedValue<Value>(
           );
         }
 
-        return valueCheck.value;
+        return checkedPlan.value;
       } else {
-        report({ name: 'checkCachedValueErrorObj', reason: valueCheck.reason });
+        report({ name: 'checkCachedValueErrorObj', reason: checkedPlan.reason });
         report({
           name: 'checkCachedValueError',
           reason:
-            valueCheck.reason instanceof Error
-              ? valueCheck.reason.message
-              : String(valueCheck.reason),
+            checkedPlan.reason instanceof Error
+              ? checkedPlan.reason.message
+              : String(checkedPlan.reason),
         });
 
         await cache.delete(key);

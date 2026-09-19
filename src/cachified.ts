@@ -8,7 +8,7 @@ import {
 import { CACHE_EMPTY, getCachedValue } from './getCachedValue';
 import { getFreshValue } from './getFreshValue';
 import { CreateReporter } from './reporter';
-import { isExpired } from './isExpired';
+import { planPendingValue } from './decisions';
 
 // This is to prevent requesting multiple fresh values in parallel
 // while revalidating or getting first value
@@ -55,7 +55,7 @@ export async function cachified<Value>(
   if (pendingValues.has(key)) {
     const { value: pendingRefreshValue, metadata } = pendingValues.get(key)!;
 
-    if (!isExpired(metadata)) {
+    if (planPendingValue(metadata, context.now).action === 'use-pending') {
       /* Notify batch that we handled this call using pending value */
       context.getFreshValue[HANDLE]?.();
       report({ name: 'getFreshValueHookPending' });

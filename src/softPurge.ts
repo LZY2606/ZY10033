@@ -1,6 +1,6 @@
-import { Cache, createCacheEntry, staleWhileRevalidate } from './common';
+import { Cache, createCacheEntry } from './common';
 import { CACHE_EMPTY, getCacheEntry } from './getCachedValue';
-import { isExpired } from './isExpired';
+import { planSoftPurge } from './decisions';
 
 interface SoftPurgeOpts {
   cache: Cache;
@@ -21,22 +21,19 @@ export async function softPurge({
   ...swrOverwrites
 }: SoftPurgeOpts) {
   const swrOverwrite = swrOverwrites.swr ?? swrOverwrites.staleWhileRevalidate;
-  const entry = await getCacheEntry({ cache, key }, () => {});
+  const result = await getCacheEntry({ cache, key }, () => {});
 
-  if (entry === CACHE_EMPTY || isExpired(entry.metadata)) {
+  /* The clock is read exactly once and passed into the decision */
+  const now = Date.now();
+  const plan = planSoftPurge({
+    entry: result === CACHE_EMPTY ? null : result,
+    swrOverwrite,
+    now,
+  });
+
+  if (plan.action === 'skip') {
     return;
   }
 
-  const ttl = entry.metadata.ttl || Infinity;
-  const swr = staleWhileRevalidate(entry.metadata) || 0;
-  const lt = Date.now() - entry.metadata.createdTime;
-
-  await cache.set(
-    key,
-    createCacheEntry(entry.value, {
-      ttl: 0,
-      swr: swrOverwrite === undefined ? ttl + swr : swrOverwrite + lt,
-      createdTime: entry.metadata.createdTime,
-    }),
-  );
+  await cache.set(key, createCacheEntry(plan.entry.value, plan.metadata));
 }

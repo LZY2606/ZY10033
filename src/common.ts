@@ -228,6 +228,12 @@ export interface Context<Value>
   report: Reporter<Value>;
   fallbackToCache: number;
   metadata: CacheMetadata;
+  /**
+   * The single clock reading of this call. All freshness decisions of one
+   * call are made against this timestamp so a call can never come to two
+   * different conclusions when crossing a time boundary.
+   */
+  now: number;
   traceId?: any;
 }
 
@@ -264,6 +270,8 @@ export function createContext<Value>(
 ): Context<Value> {
   const ttl = options.ttl ?? Infinity;
   const staleWhileRevalidate = options.swr ?? options.staleWhileRevalidate ?? 0;
+  /* The clock is read exactly once per call and passed into every decision */
+  const now = Date.now();
   const checkValueCompat: CheckValue<Value> =
     typeof checkValue === 'function'
       ? checkValue
@@ -284,9 +292,11 @@ export function createContext<Value>(
     staleRefreshTimeout: 0,
     forceFresh: false,
     ...options,
+    now,
     metadata: createCacheMetaData({
       ttl,
       swr: staleWhileRevalidate,
+      createdTime: now,
       traceId: options.traceId,
     }),
     waitUntil: options.waitUntil ?? (() => {}),

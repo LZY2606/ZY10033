@@ -1,8 +1,8 @@
 import { Context, CacheMetadata, createCacheEntry } from './common';
 import { getCacheEntry, CACHE_EMPTY } from './getCachedValue';
-import { isExpired } from './isExpired';
 import { Reporter } from './reporter';
 import { checkValue } from './checkValue';
+import { planCacheFallback, planFreshValueWrite } from './decisions';
 
 export async function getFreshValue<Value>(
   context: Context<Value>,
@@ -26,14 +26,19 @@ export async function getFreshValue<Value>(
     // in case a fresh value was forced (and errored) we might be able to
     // still get one from cache
     if (forceFresh && fallbackToCache > 0) {
-      const entry = await getCacheEntry(context, report);
-      if (
-        entry === CACHE_EMPTY ||
-        entry.metadata.createdTime + fallbackToCache < Date.now()
-      ) {
+      const result = await getCacheEntry(context, report);
+      /* The loader has settled by now, so this is a new decision point with
+         its own single clock reading (the value may have expired while loading) */
+      const now = Date.now();
+      const fallbackPlan = planCacheFallback({
+        entry: result === CACHE_EMPTY ? null : result,
+        fallbackToCache,
+        now,
+      });
+      if (fallbackPlan.action === 'throw') {
         throw error;
       }
-      value = entry.value;
+      value = fallbackPlan.entry.value;
       report({ name: 'getFreshValueCacheFallback', value });
     } else {
       // we are either not allowed to check the cache or already checked it
@@ -59,8 +64,9 @@ export async function getFreshValue<Value>(
   }
 
   try {
-    /* Only write to cache when the value has not already fully expired while getting it */
-    const write = isExpired(metadata) !== true;
+    /* Only write to cache when the value has not already fully expired while getting it.
+       The lazy clock is only read when the metadata can actually expire. */
+    const { write } = planFreshValueWrite(metadata, Date.now);
     if (write) {
       await cache.set(key, createCacheEntry(value, metadata));
     }
